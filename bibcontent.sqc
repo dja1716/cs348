@@ -1,0 +1,121 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "util.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	char db[6] = "cs348";
+	int mainPubid;
+	int aPubid, startPage, endPage, appearsIn, year, count;
+	char type[12];
+	char aName[10], title[25];
+	
+EXEC SQL END DECLARE SECTION;
+
+
+void NameByAscending() {
+
+    EXEC SQL DECLARE temp CURSOR FOR
+    SELECT a.name
+    FROM author a, wrote w
+    WHERE w.publication = :aPubid
+    AND w.author = a.aid
+    ORDER BY a.name asc;
+
+}
+
+
+int main(int argc, char *argv[]) {
+
+	if (argc!=2) {
+      printf("Usage: bibcontent <journal or proceedings pubid>\n");
+      exit(1);
+	};
+	mainPubid = atoi(argv[1]);
+	
+	EXEC SQL DECLARE report CURSOR FOR
+		with
+		Info(pubid, type, year) as (
+			SELECT j.pubid, 'JOURNAL' as type, j.year
+			FROM journal j, publication p
+			where j.pubid = :mainPubid
+			UNION
+			select pr.pubid, 'PROCEEDINS' as type, pr.year
+			from proceedings pr, publication p
+			where pr.pubid = :mainPubid
+		),
+		MyArticle(pubid, year, appearsIn, startPage, endPage, title) as (
+			select a.pubid, i.year, a.appears_in, a.startpage, a.endpage, p.title
+			from article a, Info i, publication p
+			where a.appears_in = i.pubid
+			and p.pubid = a.pubid
+		)
+		SELECT *
+		FROM MyArticle;
+
+
+
+		
+	
+	EXEC SQL WHENEVER SQLERROR GO TO error;
+	EXEC SQL CONNECT TO :db;
+
+	EXEC SQL OPEN report;
+	EXEC SQL WHENEVER NOT FOUND GO TO end;
+
+	for(;;) {
+		EXEC SQL FETCH report INTO :aPubid, :year, :appearsIn, :startPage, :endPage, :title;
+		EXEC SQL select count(author) INTO :count
+		from wrote
+		where publication = :aPubid;
+
+		
+
+
+		printf("Pubid: %d\n", aPubid);
+		printf("Type: ARTICLE\n");
+		printf("Title: %s\n", title);
+		
+		NameByAscending();
+
+		printf("Authors:");
+
+		EXEC SQL OPEN temp;
+		EXEC SQL FETCH temp INTO :aName;
+		if(count > 0) {
+			printf(" %s", aName);
+		}
+			
+		for(int i = 0; i < count - 1; i++) {
+			EXEC SQL FETCH temp INTO :aName;
+			printf(", %s", aName);
+		}
+			
+		printf("\n");
+		EXEC SQL CLOSE temp;
+
+		printf("In: %d\n", appearsIn);
+		printf("Pages: %d--%d\n", startPage, endPage);
+
+	};
+
+
+
+end:
+	// need to close report cursor
+	EXEC SQL CLOSE report;
+	EXEC SQL COMMIT;
+	EXEC SQL CONNECT reset;
+	exit(0);
+
+
+error:
+	check_error("Error occurred", &sqlca);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+	EXEC SQL ROLLBACK;
+	EXEC SQL CONNECT reset;
+	exit(1);
+}

@@ -1,0 +1,220 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "util.h"
+
+EXEC SQL INCLUDE SQLCA;
+
+EXEC SQL BEGIN DECLARE SECTION;
+	char db[6] = "cs348";
+	char aName[10], title[25], type[12], publisher[10], bName[10];
+	int aid, pubid, year, volume, number;
+	int count, appearsIn, startPage, endPage;
+	
+EXEC SQL END DECLARE SECTION;
+
+
+void NameByAscending() {
+
+    EXEC SQL DECLARE temp CURSOR FOR
+    SELECT a.name
+    FROM author a, wrote w
+    WHERE w.publication = :pubid
+    AND w.author = a.aid
+    ORDER BY a.name asc;
+
+}
+
+
+int main(int argc, char *argv[]) {
+
+	if (argc!=2) {
+      printf("Usage: bibauthor <author name>\n");
+      exit(1);
+   };
+
+
+	
+	EXEC SQL WHENEVER SQLERROR GO TO error;
+	EXEC SQL CONNECT TO :db;
+
+
+	strcpy(aName, argv[1]);
+
+	EXEC SQL DECLARE report CURSOR FOR
+		WITH
+		commonInfo(pubid, title, name) as (
+			SELECT w.publication, p.title, a.name
+			FROM wrote w, author a, publication p
+			WHERE a.name = :aName
+			AND a.aid = w.author
+			AND w.publication = p.pubid
+		),
+		MyBook(pubid, title, type, year, name) as (
+			select ci.pubid, ci.title, 'BOOK' as type, b.year, a.name
+			from commonInfo ci, book b, author a
+			where ci.pubid = b.pubid
+			and a.name <= all (
+				select aut.name 
+				from wrote w, publication p, author aut
+				where aut.aid = w.author
+				and p.pubid = w.publication
+			)
+		),
+		MyArticleYear(pubid, year) as (
+			select a.pubid, pr.year
+			from proceedings pr, commonInfo ci, article a
+			where ci.pubid = a.pubid
+			and a.appears_in = pr.pubid
+			UNION
+			select a.pubid, j.year
+			from journal j, commonInfo ci, article a
+			where ci.pubid = a.pubid
+			and a.appears_in = j.pubid
+		),
+		MyJournal(pubid, title, type, year, name) as (
+			select ci.pubid, ci.title, 'JOURNAL' as type, j.year, '' as name
+			from commonInfo ci,  journal j, author a
+			where ci.pubid = j.pubid
+		),
+		MyProceedings(pubid, title, type, year, name) as (
+			select ci.pubid, ci.title, 'PROCEEDINGS' as type, pr.year, '' as name
+			from commonInfo ci,  proceedings pr, author a
+			where ci.pubid = pr.pubid
+		),
+		MyArticle(pubid, title, type, year, name) as (
+			select ci.pubid, ci.title, 'ARTICLE' as type, ma.year, a.name
+			from commonInfo ci, article b, MyArticleYear ma, author a
+			where ci.pubid = b.pubid
+			and ma.pubid = b.pubid
+			and a.name <= all (
+				select aut.name 
+				from wrote w, publication p, author aut
+				where aut.aid = w.author
+				and p.pubid = w.publication
+			)
+		)
+		SELECT pubid, title, type, year, name
+		FROM MyBook
+		UNION
+		SELECT pubid, title, type, year, name
+		FROM MyArticle
+		UNION
+		SELECT pubid, title, type, year, name
+		FROM MyJournal
+		UNION
+		SELECT pubid, title, type, year, name
+		FROM MyProceedings
+		ORDER BY year desc, name asc;
+		
+
+	EXEC SQL OPEN report;
+	EXEC SQL WHENEVER NOT FOUND GO TO end;
+
+	for(;;) {
+		EXEC SQL FETCH report INTO :pubid, :title, :type, :year, :bName;
+		printf("Pubid: %d\n",pubid);
+		printf("Type: %s\n", type);
+		printf("Title: %s\n", title);
+		if(strcmp(type, "BOOK") == 0) {
+			EXEC SQL select b.publisher INTO :publisher
+			from book b
+			where b.pubid = :pubid;
+
+			EXEC SQL select count(author) INTO :count
+			from wrote
+			where publication = :pubid;
+
+			NameByAscending();
+
+
+			
+			printf("Authors:");
+			
+			EXEC SQL OPEN temp;
+			EXEC SQL FETCH temp INTO :aName;
+			if(count > 0) {
+				printf(" %s", aName);
+			}
+			
+			for(int i = 0; i < count - 1; i++) {
+				EXEC SQL FETCH temp INTO :aName;
+				printf(", %s", aName);
+			}
+			
+			printf("\n");
+			EXEC SQL CLOSE temp;
+			
+
+			printf("Publisher: %s\n", publisher);
+			printf("Year: %d\n", year);
+		}
+		if (strcmp(type, "ARTICLE") == 0) {
+			EXEC SQL select a.appears_in, a.startpage, a.endpage INTO :appearsIn, :startPage, :endPage
+			from article a
+			where a.pubid = :pubid;
+
+			EXEC SQL select count(author) INTO :count
+			from wrote
+			where publication = :pubid;
+
+			NameByAscending();
+
+			printf("Authors:");
+
+			EXEC SQL OPEN temp;
+			EXEC SQL FETCH temp INTO :aName;
+			if(count > 0) {
+				printf(" %s", aName);
+			}
+			
+			for(int i = 0; i < count - 1; i++) {
+				EXEC SQL FETCH temp INTO :aName;
+				printf(", %s", aName);
+			}
+			
+			printf("\n");
+			EXEC SQL CLOSE temp;
+
+			printf("In: %d\n", appearsIn);
+			printf("pages: %d--%d\n", startPage, endPage);
+			
+
+
+		}
+		if (strcmp(type, "JOURNAL") == 0) {
+			EXEC SQL select j.volume, j.number, j.year INTO :volume, :number, :year
+			from journal j
+			where j.pubid = :pubid;
+
+			printf("Volume: %d\n", volume);
+			printf("Number: %d\n", number);
+			printf("Yeaer: %d\n", year);
+		}
+		if (strcmp(type, "PROCEEDINGS") == 0) {
+			EXEC SQL select p.year INTO :year
+			from proceedings p
+			where p.pubid = :pubid;
+
+			printf("Year: %d\n", year);
+		}
+
+
+
+	};
+
+end:
+	EXEC SQL CLOSE report;
+	EXEC SQL COMMIT;
+	EXEC SQL CONNECT reset;
+	exit(0);
+
+
+error:
+	check_error("Error occurred", &sqlca);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+	EXEC SQL ROLLBACK;
+	EXEC SQL CONNECT reset;
+	exit(1);
+}
